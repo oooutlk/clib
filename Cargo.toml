@@ -1,0 +1,28 @@
+[package]
+name = "clib"
+version = "0.1.0"
+edition = "2018"
+authors = ["oooutlk <oooutlk@outlook.com>"]
+license = "MIT/Apache-2.0"
+keywords = [ "ffi", "bindgen", "pkg-config", "header", "binding" ]
+readme = "README.md"
+repository = "https://github.com/oooutlk/clib"
+documentation = "https://docs.rs/clib"
+categories = [ "external-ffi-bindings", "development-tools::ffi" ]
+description = "Generates bindings for C libraries"
+
+[build-dependencies]
+bindgen = "0.55"
+pkg-config = "0.3"
+serde = "1.0"
+serde_derive = "1.0"
+toml = "0.5"
+
+[features]
+libcurl = []
+liblzma = []
+sqlite3 = []
+tcl86 = []
+tk86 = ["tcl86"]
+x11 = []
+zlib = []
