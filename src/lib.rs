@@ -6,4 +6,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
+pub mod metabuild;
+pub use metabuild::metabuild;
+
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
