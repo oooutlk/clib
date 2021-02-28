@@ -1,4 +1,0 @@
-[header]
-files = [ "tk.h" ]
-import = [ "tcl86" ]
-import_dir = [ "x11" ]

@@ -1,0 +1,32 @@
+[package]
+name = "tk"
+version = "0.1.0"
+authors = ["oooutlk <oooutlk@outlook.com>"]
+edition = "2018"
+license = "MIT"
+publish = false
+
+[dependencies]
+clib = { path = "../.." }
+tcl = { path = "../tcl" }
+
+[features]
+libtk = []
+
+[package.metadata.inwelling-clib]
+feature = "libtk"
+
+[package.metadata.inwelling.clib]
+build = ["tk86"]
+
+[package.metadata.inwelling.clib.spec.tk86]
+pc-alias = ["tk"]
+headers = ["tk.h"]
+dependencies = ["tcl86"]
+header-dependencies = ["x11"]
+exe = ["wish86", "wish"]
+includedir = ["tk8.6", "tk"]
+
+[package.metadata.inwelling.clib.spec.tk86.libs]
+tk = ["libtk86.so", "libtk8.6.so", "libtk.so", "libtk86.a", "libtk.a", "libtk86.dll.a", "libtk.dll.a", "tk86t.dll", "tk86t.lib"]
+tkstub = ["libtkstub86.a", "libtkstub.a", "tkstub86.lib"]

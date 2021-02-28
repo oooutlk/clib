@@ -1,98 +1,177 @@
 # Purpose
 
-Use toml files to do no-code generating bindings to C libraries.
+Use metadata embeded in Cargo.toml files to generate bindings to C libraries.
 
-1. It can be used as a replacement of `-sys` crates, each of which should
-have generated bindings separately for one single C library.
-
-2. It can help a standalone `-sys` crate to generate bindings. The users do not
-need to learn the usage of `pkg-config` and `bindgen` crates.
+It is an all-in-one solution, an alternative to `-sys` crates, each of which
+should have generated bindings separately for one single C library.
 
 # Requirements
 
-1. C libraries must provide pkg-config file.
+1. C libraries can be compiled with `bindgen`'s default configuration.
 
-2. C libraries can be compiled with `bindgen`'s default cofiguration.
+2. C libraries provides pkg-config file, or its installation is consistent with
+the assumption of this crate.
 
-# Bundled C libraries
+# Step-by-step explanation of tk library metadata
 
-The toml files of the following libraries are bundled in the `clib_spec/`
-directory: libcurl, liblzma, sqlite3, tcl86, tk86, x11, zlib. This list
-can grow in the future.
+Sample Cargo.toml files of tcl and tk libraries are in `examples/` folder. Let's
+take tk's metadata for demonstration.
 
-These are also crate features.
-
-## Example of generating "sqlite3" bindings
-
-Add this crate to Cargo.toml, and enable the "sqlite3" feature.
+## Section of metadata
 
 ```toml
-clib = { version = "0.1", features = "sqlite3" }
+[package.metadata.inwelling.clib]
+build = ["tk86"]
 ```
+
+All metadata are located in section `[package.metadata.inwelling.clib]`, because
+this crate depends on crate lib, which utilizes
+[crate inwelling](https://crates.io/crates/inwelling) to collect metadata from
+downstream users.
+
+The value `build = ["tk86"]` indicates that crate tk is asking crate clib to
+build the C library of tk86.
+
+## Section of build specification
+
+```toml
+[package.metadata.inwelling.clib.spec.tk86]
+```
+
+This section provides necessary information to probe library's headers,
+include/link paths and C libraries that needs to link against, with or without
+`pkg-config`.
+
+Note that "spec" is placed between "clib" and "tk86" in the section name. It is
+the specification for building tk86, but not asking crate clib to build. As
+mentioned above, it is `build = ["tk86"]` which makes clib to build tk86.
+
+## Enumerating names of pkg-config file
+
+```toml
+[package.metadata.inwelling.clib.spec.tk86]
+pc-alias = ["tk"]
+```
+
+This value tells `pkg-config` to find `tk.pc` if `tk86.pc` does not exist.
+
+## Enumerating header files of tk library
+
+```toml
+[package.metadata.inwelling.clib.spec.tk86]
+headers = ["tk.h"]
+```
+
+This value tells crate bindgen that "tk.h" is the header file of tk86 library.
+
+## Enumerating dependencies
+
+```toml
+[package.metadata.inwelling.clib.spec.tk86]
+dependencies = ["tcl86"]
+```
+
+This value specifies tcl86 as the dependency of tk86. The crate clib will probe
+tcl86 and its dependencies recusively, if any( actually, none in this example).
+
+The metadata of tcl86 is in section
+`[package.metadata.inwelling.clib.spec.tcl86]` of `examples/tcl/Cargo.toml`
+which will be collected by crate inwelling as well.
+
+## Enumerating possible executable file names
+
+```toml
+[package.metadata.inwelling.clib.spec.tk86]
+exe = ["wish86", "wish"]
+```
+
+The value `exe = ["wish86", "wish"]` tells that the executable file name of tk
+shell may be "wish86" or "wish". It is optional, only used if `pkg-config` is
+missing or failed to probe library. The crate clib will try to locate the
+executable file and expect the include and link path to be
+"../include/{some-dir-in-includedir}" and "../lib" respectively. Note that
+"wish86.exe" and "wish.exe" are not necessary for Windows.
+
+## Enumerating possible include paths
+
+```toml
+[package.metadata.inwelling.clib.spec.tk86]
+includedir = ["tk8.6", "tk"]
+```
+
+The value `includedir = ["tk8.6", "tk"]` tells the possible names of include
+path under "../include" which is mentioned previously. If none of the path
+exists, the include path will be expected to be "../include". It is optional,
+only used if `pkg-config` is missing or failed to probe library.
+
+## Importing extra include paths
+
+```toml
+[package.metadata.inwelling.clib.spec.tk86]
+header-dependencies = ["x11"]
+```
+
+This value tells crate clib to add include paths of x11 and its
+"header-dependencies" recusively, if any, to tk's.
+
+## The libs section
+
+```toml
+[package.metadata.inwelling.clib.spec.tk86.libs]
+tk = ["libtk86.so", "libtk8.6.so", "libtk.so", "libtk86.a", "libtk.a", "libtk86.dll.a", "libtk.dll.a", "tk86t.dll", "tk86t.lib"]
+tkstub = ["libtkstub86.a", "libtkstub.a", "tkstub86.lib"]
+```
+
+The value `tk = [..]` enumerates possible library file names that need link
+against. Note that the key name "tk" is for human readability only.
+
+Once file of some name has been found under link path, the crate clib will stop
+searching and emit "cargo:rustc-link-lib={the-stripped-name}" to cargo. For
+example, if "libtk86.so" has been found, the prefix "lib" and suffix ".so" will
+be stripped and "cargo:rustc-link-lib=tk86" will be emitted.
+
+## Optional metadata
+
+```toml
+[features]
+libtk = []
+
+[package.metadata.inwelling-clib]
+feature = "libtk"
+```
+
+Cargo features can control whether to send metadata or not. in section
+`[package.metadata.inwelling-clib]`, a value of `feature = "libtk"`
+means that the metadata will be collected by inwelling if and only if feature
+"libtk" is enabled.
+
+# Global namespace
 
 All generated functions, types and constants are in the root namespace of this
-crate. You can prefix them with `clib::`, e.g. `clib::sqlite3_open()`, or
-`use clib::*;` and use `sqlite3_open()` directly.
+crate. You can prefix them with `clib::`, e.g.
+`clib::Tcl_Init()`/`clib::Tk_Init()`, or `use clib::*;` and use
+`Tcl_Init()`/`Tk_Init()` directly. On the other hand, traditional "-sys" crates
+of tcl-sys and tk-sys generate `tcl_sys::Tcl_Init()` and `tk_sys::Tk_Init()`
+respectively.
 
-# Extra C libraries
+# Caveat
 
-Use the environment variable `CLIB_EXTRA_LIBS` to assign a whitespace-separated
-list of C library names which are not provided as crate features. Missing toml
-files are provided via searching `CLIB_SPEC_DIRS`. See section below.
+## Reverse dependency
 
-*Note: the library name must be accordant to the ".pc" file name.*
+Collecting metadata from downstream and utilizing it in build process makes
+crate clib depending on its downstream crates. Unfortunately this kind of
+reverse-dependency is not known to cargo. As a result, the changing of metadata
+caused by modification of Cargo.toml files or changing of feature set will not
+cause recompilation of crate clib, which it should.
 
-# Extra directories of toml files
+To address this issue, simply do `cargo clean`, or more precisely,
+`cargo clean --package clib` before running `cargo build`.
 
-Use the environment variable `CLIB_SPEC_DIRS` to assign a semicolon-separated
-list of extra search paths for toml files.
+## Windows does not support pkg-config well
 
-This list can
-
-1. provide the locations of toml files which are not bundled by this crate.
-
-2. override bundled toml files. For example, to override `sqlite3.toml`, just
-put your modified file in downstream crate's `clib_spec/` directory.
-
-
-*Note: Absolute paths are preferred over relative ones, because the latters are
-NOT relative to downstream crates but to THIS CRATE.*
-
-# Set minimum version requirement
-
-Use the environment variable `CLIB_{}_MIN_VER` to set a min version requirement
-for the library `{}`. The absence of the variable means "any version is ok".
-
-# The toml configuration file's syntax
-
-## The "header" section
-
-Currently this is the only supported section in toml configuration file.
-
-1. `files`: a list of C headers to generate bindings for.
-
-2. `import`: a list of dependencies of other C libraries' names. It is optional.
-
-3. `import_dir`: a list of C libraries' names, hearders of which are included in
-current library's header(s). It is optional.
-
-Take `tk86.toml` for example:
-
-```toml
-[header]
-files = [ "tk.h" ]
-import = [ "tcl86" ]
-import_dir = [ "x11" ]
-```
-
-The value of `files` indicates that tk.h is the public header for tk86.
-
-The value of `import` indicates that tcl86 is an upstream library which need
-also generate bindings for.
-
-The value of `x11` indicates that x11's include directory must be added into
-the current library(tk86)'s header search path. This is required because tk86's
-headers include x11's headers.
+This crate works well if pkg-config works on the OS. When it is not the case,
+e.g. on Windows, crate clib will search the installation location with some
+assumptions, and the search may fail in a larger probability.
 
 # License
 

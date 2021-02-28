@@ -1,0 +1,22 @@
+[package]
+name = "tcl"
+version = "0.1.0"
+authors = ["oooutlk <oooutlk@outlook.com>"]
+edition = "2018"
+publish = false
+
+[dependencies]
+clib = { path = "../../../clib" }
+
+[package.metadata.inwelling.clib]
+build = ["tcl86"]
+
+[package.metadata.inwelling.clib.spec.tcl86]
+pc-alias = ["tcl"]
+headers = ["tcl.h"]
+exe = ["tclsh86", "tclsh"]
+includedir = ["tcl8.6", "tcl"]
+
+[package.metadata.inwelling.clib.spec.tcl86.libs]
+tcl = ["libtcl86.so", "libtcl8.6.so", "libtcl.so", "libtcl86.a", "libtcl.a", "libtcl86.dll.a", "libtcl.dll.a", "tcl86t.dll", "tcl86t.lib"]
+tclstub = ["libtclstub86.a", "libtclstub.a", "tclstub86.lib"]

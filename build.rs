@@ -1,159 +1,318 @@
-use bindgen::Builder;
-use pkg_config::{Config, Library};
-use serde_derive::Deserialize;
+use anyhow::{
+    Context,
+    Result,
+    anyhow,
+};
+
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     env,
     fmt::Debug,
     fs::File,
-    io::{self, Read},
-    ops::RangeBounds,
     path::{Path, PathBuf},
     process::Command,
-    sync::Once,
 };
 
-static mut EXTRA_LIBS  : &'static str = "";
-static INIT_EXTRA_LIBS : Once = Once::new();
-
-fn extra_libs() -> &'static str {
-    // write once and read all is safe
-    unsafe {
-        INIT_EXTRA_LIBS.call_once( || {
-            env::var("CLIB_EXTRA_LIBS")
-                .map( |var| EXTRA_LIBS = Box::leak( var.into_boxed_str() ))
-                .ok();
-        });
-        &EXTRA_LIBS
-    }
-}
-
-static mut SPEC_DIRS  : &'static str = ".";
-static INIT_SPEC_DIRS : Once = Once::new();
-
-fn specs_dirs() -> &'static str {
-    // write once and read all is safe
-    unsafe {
-        INIT_SPEC_DIRS.call_once( || {
-            env::var("CLIB_SPEC_DIRS")
-                .map( |var| SPEC_DIRS = Box::leak( var.into_boxed_str() ))
-                .ok();
-        });
-        &SPEC_DIRS
-    }
-}
-
-#[derive( Debug, Deserialize )]
-struct Meta {
-    alias: HashMap<String,String>,
-}
-
-#[derive( Debug, Deserialize )]
-struct Spec {
-    header: Header,
-}
-
-#[derive( Debug, Deserialize )]
-struct Header {
-    files      : Vec<String>,
-    import     : Option<Vec<String>>,
-    import_dir : Option<Vec<String>>,
-}
-
-fn probe<'n,'v>( name: &'n str, version: impl RangeBounds<&'v str> ) -> Result<Library, pkg_config::Error> {
-    let mut cfg = Config::new();
-    cfg.cargo_metadata( true ).range_version( version );
-    Ok( cfg.probe( name )? )
-}
-
-fn load_toml<P: AsRef<Path> +Clone +Debug>( name: P ) -> Result<String, io::Error> {
-    for dir in specs_dirs().split(';').chain( Some(".")) {
-        let path = Path::new( &dir ).join( name.clone() );
-        let mut meta = match File::open( path ) {
-            Ok( meta ) => meta,
-            Err( _ ) => continue,
-        };
-        let mut contents = String::new();
-        meta.read_to_string( &mut contents )?;
-        return Ok( contents );
-    }
-    panic!( "{:?} not found", name );
-}
+type Json = serde_json::value::Value;
 
 const UTF8_PATH: &'static str = "path should be valid UTF-8 string.";
+const PKG_NAME_IS_STR: &'static str = "pkg name should be str.";
 
-fn load_spec( name: &str ) -> Option<String> {
-    let path = Path::new( "clib_spec" ).join( name ).with_extension( "toml" );
-    load_toml( path ).ok()
+fn check_os( map: &serde_json::Map<String,Json> ) -> Result<bool> {
+    if let Some( os ) = map .get("os") {
+        let os = os.as_str().context( "os name should be str." )?;
+        Ok( match_os( os ))
+    } else {
+        Ok( true )
+    }
 }
 
-#[derive( Debug, Default )]
+fn match_os( name: &str ) -> bool {
+    match name {
+        "android"   => if cfg!( target_os = "android"   ) {true} else {false},
+        "dragonfly" => if cfg!( target_os = "dragonfly" ) {true} else {false},
+        "freebsd"   => if cfg!( target_os = "freebsd"   ) {true} else {false},
+        "ios"       => if cfg!( target_os = "ios"       ) {true} else {false},
+        "linux"     => if cfg!( target_os = "linux"     ) {true} else {false},
+        "macos"     => if cfg!( target_os = "macos"     ) {true} else {false},
+        "netbsd"    => if cfg!( target_os = "netbsd"    ) {true} else {false},
+        "openbsd"   => if cfg!( target_os = "openbsd"   ) {true} else {false},
+        "windows"   => if cfg!( target_os = "windows"   ) {true} else {false},
+        "unix"      => if cfg!(              unix       ) {true} else {false},
+        _           => false,
+    }
+}
+
+#[derive( Debug )]
 pub struct LibInfo {
-    link_paths    : Vec<String>,
-    include_paths : Vec<String>,
-    headers       : Vec<String>,
-
+    link_paths    : RefCell<Vec<String>>,
+    include_paths : RefCell<Vec<String>>,
+    headers       : RefCell<Vec<String>>,
+    specs         : HashMap<String,Json>,
 }
 
-pub fn probe_library<'n,'v>( name: &'n str, version: impl RangeBounds<&'v str> ) -> Result<LibInfo,pkg_config::Error> {
-    let meta = load_toml( "clib.toml" ).ok().expect( "clib.toml should exist in crate clib." );
-    let meta: Meta = toml::from_str( &meta ).ok().expect( "clib.toml should be valid toml file." );
-    let name = meta.alias.get( name ).map( |s| s.as_str() ).unwrap_or( name );
-
-    #[cfg( target_os = "freebsd" )]
-    env::set_var( "PKG_CONFIG_ALLOW_CROSS", "1" );
-
-    probe( name, version ).map( |lib| {
-        let mut headers = Vec::new();
-        let mut include_paths = Vec::new();
-        probe_headers( name, &mut headers, &mut include_paths );
-
-        lib.include_paths.iter().for_each( |path| {
-            include_paths.push( path.to_str().expect( UTF8_PATH ).to_owned() );
-        });
-
+impl LibInfo {
+    fn new( specs: HashMap<String,Json> ) -> Self {
         LibInfo {
-            link_paths    : lib.link_paths.iter().map( |path| path.to_str().expect( UTF8_PATH ).to_owned() ).collect(),
-            include_paths ,
-            headers       ,
+            link_paths    : RefCell::default(),
+            include_paths : RefCell::default(),
+            headers       : RefCell::default(),
+            specs         ,
         }
-    })
+    }
+
+    fn probe( &self, pkg_name: &str, scan_incdir: bool ) -> Result<()> {
+        let probed_ex = self
+            .probe_via_pkgconf( pkg_name, scan_incdir )
+            .unwrap_or_else( |_| self.probe_via_search( pkg_name, scan_incdir ));
+
+        if scan_incdir {
+            self.include_paths.borrow_mut().push( self.get_includedir( &probed_ex )? );
+        }
+
+        if let Some( spec ) = self.specs.get( pkg_name ) {
+            let include_dir = self.get_includedir( &probed_ex )?;
+
+            if let Some( object ) = spec.as_object() {
+                if !scan_incdir {
+                    object
+                        .get( "headers" )
+                        .and_then( |headers| headers.as_array() )
+                        .and_then( |headers| headers
+                            .iter()
+                            .try_for_each( |header| -> Result<()> {
+                                if let Some( header ) = header.as_str() {
+                                    self.headers.borrow_mut().push(
+                                        Path::new( &include_dir )
+                                            .join( header )
+                                            .to_str()
+                                            .context( UTF8_PATH )?
+                                            .to_owned()
+                                    )
+                                }
+                                Ok(())
+                            })
+                            .ok()
+                        ).context( UTF8_PATH )?;
+
+                    if !probed_ex.pkgconf_ok() {
+                        if let Some( dependencies ) = object.get( "dependencies" ) {
+                            match dependencies {
+                                Json::Array( dependencies ) => for pkg_name in dependencies {
+                                    self.probe( pkg_name.as_str().context( PKG_NAME_IS_STR )?, false )?;
+                                },
+                                Json::Object( dependencies ) => for (pkg_name, dep) in dependencies {
+                                    let dep = dep.as_object().context("named dependency should be object.")?;
+                                    if check_os( dep )? {
+                                        self.probe( pkg_name, false )?;
+                                    }
+                                },
+                                _ => return Err( anyhow!( "invalid dependencies." )),
+                            }
+                        }
+                    }
+                }
+
+                if let Some( dependencies ) = object.get( "header-dependencies" ) {
+                    match dependencies {
+                        Json::Array( dependencies ) => for pkg_name in dependencies {
+                            self.probe( pkg_name.as_str().context( PKG_NAME_IS_STR )?, true )?;
+                        },
+                        Json::Object( dependencies ) => for (pkg_name, dep) in dependencies {
+                            let dep = dep.as_object().context("named dependency should be object.")?;
+                            if check_os( dep )? {
+                                self.probe( pkg_name, true )?;
+                            }
+                        },
+                        _ => return Err( anyhow!( "invalid header-dependencies." )),
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn probe_via_pkgconf( &self, pkg_name: &str, scan_incdir: bool ) -> Result<ProbedEx> {
+        let mut cfg = pkg_config::Config::new();
+        cfg.cargo_metadata( true );
+
+        let mut pc_file_names = vec![ pkg_name ];
+
+        if let Some( spec ) = self.specs.get( pkg_name ) {
+            let object = spec.as_object().expect("clib specs should be a json map.");
+            if let Some( pc_alias ) = object.get("pc-alias") {
+                pc_alias
+                    .as_array()
+                    .expect("pc-alias should be array.")
+                    .iter()
+                    .for_each( |pc| {
+                        pc_file_names.push( pc.as_str().expect( ".pc file name should be str." ));
+                    });
+            }
+        }
+
+        let mut names = pc_file_names.into_iter();
+        let (library, pc_name) = loop {
+            if let Some( name ) = names.next() {
+                if let Ok( library ) = cfg.probe( name ) {
+                    break (library, name.to_owned() );
+                }
+            } else {
+                return Err( anyhow!( "failed to locate .pc file" ));
+            }
+        };
+
+        if !scan_incdir {
+            library.link_paths
+                .into_iter()
+                .map( |path| path.to_str().expect( UTF8_PATH ).to_owned() )
+                .for_each( |link_path| self.link_paths.borrow_mut().push( link_path ));
+
+            library.include_paths
+                .into_iter()
+                .map( |path| path.to_str().expect( UTF8_PATH ).to_owned() )
+                .for_each( |include_path| self.include_paths.borrow_mut().push( include_path ));
+        }
+
+        Ok( ProbedEx::PcName( pc_name ))
+    }
+
+    fn probe_via_search( &self, pkg_name: &str, scan_incdir: bool ) -> ProbedEx {
+        if let Some( object ) = self.specs
+            .get( pkg_name )
+            .unwrap()
+            .as_object()
+        {
+            object
+                .get( "exe" )
+                .and_then( |exe| exe.as_array() )
+                .map( |executable_names| -> ProbedEx {
+                    for name in executable_names {
+                        let name = name.as_str().expect("exe names should be str.");
+                        let output = Command::new( if cfg!(unix) { "which" } else { "where" })
+                            .arg( name ).output();
+                        match output {
+                            Ok( output ) => {
+                                let s = output.stdout.as_slice();
+                                if s.is_empty() {
+                                    continue;
+                                }
+                                let cmd_path = Path::new( std::str::from_utf8( s )
+                                    .expect( UTF8_PATH )
+                                    .trim_end() );
+
+                                let parent = cmd_path.parent()
+                                    .expect("executable should not be found in root directory.");
+                                assert_eq!( parent.file_name().expect( UTF8_PATH ), "bin" );
+                                let prefix = parent.parent()
+                                    .expect("bin should not be found in root directory.");
+                                let include_base = prefix.join("include");
+
+                                let guess_include = object
+                                    .get("includedir")
+                                    .and_then( |includedirs| includedirs.as_array() )
+                                    .and_then( |dirs| Some( dirs.iter().map( |dir| dir.as_str().expect( "include dir should be str." ))))
+                                    .and_then( |dirs| {
+                                        for dir in dirs {
+                                            let dir = include_base.join( dir );
+                                            if dir.exists() {
+                                                return Some( dir.to_str().expect( UTF8_PATH ).to_owned() );
+                                            }
+                                        }
+                                        Some( include_base.to_str().expect( UTF8_PATH ).to_owned() )
+                                    })
+                                    .expect("include_path");
+
+                                if !scan_incdir {
+                                    self.link_paths.borrow_mut().push( prefix.join("lib").to_str().expect( UTF8_PATH ).to_owned() );
+                                    println!( "cargo:rustc-link-search=native={}/lib", prefix.to_str().expect( UTF8_PATH ));
+                                    emit_cargo_meta_for_libs( &prefix, object.get( "libs" ).expect( "metadata should contain libs" ));
+                                    object.get( "libs-private" ).map( |libs| emit_cargo_meta_for_libs( &prefix, libs ));
+                                }
+
+                                return ProbedEx::IncDir( guess_include );
+                            },
+                            Err(_) => continue,
+                        }
+                    }
+                    panic!("failed to locate executable");
+                })
+                .expect("lib probed via search.")
+        } else {
+            panic!("failed to search lib.");
+        }
+    }
+
+    fn get_includedir( &self, probe_ex: &ProbedEx ) -> Result<String> {
+        match probe_ex {
+            ProbedEx::PcName( pc_name ) => {
+                let exe = env::var( "PKG_CONFIG" ).unwrap_or_else( |_| "pkg-config".to_owned() );
+                let mut cmd = Command::new( exe );
+                cmd.args( &[ &pc_name, "--variable", "includedir" ]);
+
+                let output = cmd.output()?;
+                let result = Ok( std::str::from_utf8( output.stdout.as_slice() )?
+                    .trim_end().to_owned() );
+                result
+            },
+            ProbedEx::IncDir( includedir ) => {
+                let path = Path::new( &includedir );
+                assert!( path.exists() );
+                Ok( format!( "{}", path.display() ))
+            },
+        }
+    }
 }
 
-fn get_includedir( pkg_name: &str ) -> String {
-    let exe = env::var( "PKG_CONFIG" ).unwrap_or_else( |_| "pkg-config".to_owned() );
-    let mut cmd = Command::new( exe );
-    cmd.args( &[ pkg_name, "--variable", "includedir" ]);
+fn emit_cargo_meta_for_libs( prefix: &Path, value: &Json ) {
+    let lib_path = prefix.join("lib");
 
-    let output = cmd.output().expect( &format!( "`pkg-config {} --variable includedir` should run successfully.", pkg_name ));
-    std::str::from_utf8( output.stdout.as_slice() ).expect( "pkg-config should generate utf8-compatible output." )
-        .trim_end().to_owned()
+    if let Some( object ) = value.as_object() {
+        'values:
+        for value in object.values() {
+            let lib_names = value.as_array().expect("names of libs should be an array.");
+            for lib_name in lib_names {
+                let lib_name = lib_name.as_str().expect( "lib name should be str." );
+                if lib_path.join( lib_name ).exists() {
+                    println!( "cargo:rustc-link-lib={}", get_link_name( lib_name ));
+                    continue 'values;
+                }
+            }
+            panic!("lib should be found in {:?} directory.", lib_path );
+        }
+    } else if let Some( lib_names ) = value.as_array() {
+        for lib_name in lib_names {
+            let lib_name = lib_name.as_str().expect("lib name should be str.");
+            if lib_path.join( lib_name ).exists() {
+                println!( "cargo:rustc-link-lib={}", get_link_name( lib_name ));
+            } else {
+                panic!( "failed to locate {}", lib_name );
+            }
+        }
+    }
 }
 
-fn probe_headers( pkg_name: &str, headers: &mut Vec<String>, include_dirs: &mut Vec<String> ) {
-    load_spec( pkg_name ).map( |spec| {
-        let include_dir = get_includedir( &pkg_name );
-        let spec: Spec = toml::from_str( &spec ).ok().expect( &format!( "{} should be valid toml file.", pkg_name ));
-
-        spec.header.files.iter().for_each( |file|
-            headers.push( Path::new( &include_dir ).join( file ).to_str().expect( UTF8_PATH ).to_string() ));
-
-        spec.header.import.map( |import| import.iter().for_each( |pkg| probe_headers( pkg, headers, include_dirs )));
-        spec.header.import_dir.map( |import_dir| import_dir.iter().for_each( |pkg| {
-            include_dirs.push( get_includedir( pkg ))
-        }));
-    });
+fn get_link_name( lib_name: &str ) -> &str {
+    let start = if lib_name.starts_with( "lib" ) { 3 } else { 0 };
+    match lib_name.rfind('.') {
+        Some( dot ) => &lib_name[ start..dot ],
+        None => &lib_name[ start.. ],
+    }
 }
 
-pub fn fold_lib_info<'n,'v,'l>( name: &'n str, version: impl RangeBounds<&'v str>, lib_info_all: &'l mut LibInfo )
-    -> Result<(), pkg_config::Error>
-{
-    probe_library( name, version )
-    .map( |lib_info| {
-        lib_info.link_paths.into_iter().for_each( |path| { lib_info_all.link_paths.push( path ); });
-        lib_info.include_paths.into_iter().for_each( |path| { lib_info_all.include_paths.push( path ); });
-        lib_info.headers.into_iter().for_each( |path| { lib_info_all.headers.push( path ); });
-    })
+enum ProbedEx {
+    IncDir( String ),
+    PcName( String ),
+}
+
+impl ProbedEx {
+    fn pkgconf_ok( &self ) -> bool {
+        match self {
+            ProbedEx::IncDir(_)  => false,
+            ProbedEx::PcName(_)  => true,
+        }
+    }
 }
 
 fn generate_nothing() {
@@ -162,61 +321,54 @@ fn generate_nothing() {
 }
 
 fn main() {
-    #[allow( unused_mut )]
-    let mut pkgs = HashSet::<&str>::new();
+    let (specs, builds) = inwelling::inwelling()
+        .sections
+        .into_iter()
+        .fold(( HashMap::<String,Json>::new(), HashSet::<String>::new() ), |(mut specs, mut builds), section| {
+            section.metadata
+                .as_object()
+                .map( |obj| {
+                    obj .get( "spec" )
+                        .and_then( |spec| spec.as_object() )
+                        .map( |spec| spec.iter()
+                            .for_each( |(key,value)| { specs.insert( key.clone(), value.clone() ); }));
+                    obj .get( "build" )
+                        .and_then( |build| build.as_array() )
+                        .map( |build_list| build_list.iter()
+                            .for_each( |pkg| { pkg.as_str().map( |pkg| { builds.insert( pkg.to_owned() ); }); }));
+                });
+           (specs, builds)
+        });
 
-    #[cfg( feature = "libcurl" )]
-    pkgs.insert( "libcurl" );
-
-    #[cfg( feature = "liblzma" )]
-    pkgs.insert( "liblzma" );
-
-    #[cfg( feature = "sqlite3" )]
-    pkgs.insert( "sqlite3" );
-
-    #[cfg( feature = "tcl86" )]
-    pkgs.insert( "tcl86" );
-
-    #[cfg( feature = "tk86" )]
-    pkgs.insert( "tk86" );
-
-    #[cfg( feature = "x11" )]
-    pkgs.insert( "x11" );
-
-    #[cfg( feature = "zlib" )]
-    pkgs.insert( "zlib" );
-
-    pkgs.extend( extra_libs().split(' ') );
-
-    if pkgs.is_empty() {
+    if builds.is_empty() {
         generate_nothing();
         return;
     }
 
-    let mut lib_info_all = LibInfo::default();
+    #[cfg( target_os = "freebsd" )]
+    env::set_var( "PKG_CONFIG_ALLOW_CROSS", "1" );
 
-    pkgs.iter().for_each( |pkg| if !pkg.is_empty() {
-        match env::var( &format!( "CLIB_{}_MIN_VER", pkg.to_uppercase() )) {
-            Ok( min_ver ) => {
-                fold_lib_info( pkg, min_ver.as_str().., &mut lib_info_all ).ok()
-            },
-            Err( _ ) => fold_lib_info( pkg, .., &mut lib_info_all ).ok(),
-        };
+    let lib_info_all = LibInfo::new( specs );
+
+    builds.iter().for_each( |pkg_name| {
+        if !pkg_name.is_empty() {
+            lib_info_all.probe( pkg_name, false ).unwrap();
+        }
     });
 
-    if lib_info_all.headers.is_empty() {
+    if lib_info_all.headers.borrow().is_empty() {
         generate_nothing();
         return;
     }
 
-    let mut builder = Builder::default()
+    let mut builder = bindgen::Builder::default()
         .generate_comments( false )
     ;
 
-    for header in lib_info_all.headers.iter() {
+    for header in lib_info_all.headers.borrow().iter() {
         builder = builder.header( header );
     }
-    for path in lib_info_all.include_paths.iter() {
+    for path in lib_info_all.include_paths.borrow().iter() {
         let opt = format!( "-I{}", path );
         builder = builder.clang_arg( &opt );
     }

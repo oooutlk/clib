@@ -1,6 +1,0 @@
-[executable]
-unix_file = "tclsh86"
-windows_file = "tclsh86.exe"
-
-[header]
-files = [ "tcl.h" ]
