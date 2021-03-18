@@ -4,6 +4,8 @@ use anyhow::{
     anyhow,
 };
 
+use inwelling::*;
+
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -321,7 +323,7 @@ fn generate_nothing() {
 }
 
 fn main() {
-    let (specs, builds) = inwelling::inwelling()
+    let (specs, builds) = inwelling( Opts::default() )
         .sections
         .into_iter()
         .fold(( HashMap::<String,Json>::new(), HashSet::<String>::new() ), |(mut specs, mut builds), section| {

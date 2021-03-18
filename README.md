@@ -12,7 +12,7 @@ should have generated bindings separately for one single C library.
 2. C libraries provides pkg-config file, or its installation is consistent with
 the assumption of this crate.
 
-# Step-by-step explanation of tk library metadata
+# Usage demonstration: step-by-step explanation of tk library metadata
 
 Sample Cargo.toml files of tcl and tk libraries are in `examples/` folder. Let's
 take tk's metadata for demonstration.
@@ -155,17 +155,6 @@ of tcl-sys and tk-sys generate `tcl_sys::Tcl_Init()` and `tk_sys::Tk_Init()`
 respectively.
 
 # Caveat
-
-## Reverse dependency
-
-Collecting metadata from downstream and utilizing it in build process makes
-crate clib depending on its downstream crates. Unfortunately this kind of
-reverse-dependency is not known to cargo. As a result, the changing of metadata
-caused by modification of Cargo.toml files or changing of feature set will not
-cause recompilation of crate clib, which it should.
-
-To address this issue, simply do `cargo clean`, or more precisely,
-`cargo clean --package clib` before running `cargo build`.
 
 ## Windows does not support pkg-config well
 
