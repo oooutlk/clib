@@ -4,8 +4,6 @@ use anyhow::{
     anyhow,
 };
 
-use inwelling::*;
-
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -16,13 +14,13 @@ use std::{
     process::Command,
 };
 
-type Json = serde_json::value::Value;
+type Toml = toml::value::Value;
 
 const UTF8_PATH: &'static str = "path should be valid UTF-8 string.";
 const PKG_NAME_IS_STR: &'static str = "pkg name should be str.";
 
-fn check_os( map: &serde_json::Map<String,Json> ) -> Result<bool> {
-    if let Some( os ) = map .get("os") {
+fn check_os( table: &toml::Table ) -> Result<bool> {
+    if let Some( os ) = table .get("os") {
         let os = os.as_str().context( "os name should be str." )?;
         Ok( match_os( os ))
     } else {
@@ -51,11 +49,11 @@ pub struct LibInfo {
     link_paths    : RefCell<Vec<String>>,
     include_paths : RefCell<Vec<String>>,
     headers       : RefCell<Vec<String>>,
-    specs         : HashMap<String,Json>,
+    specs         : HashMap<String,Toml>,
 }
 
 impl LibInfo {
-    fn new( specs: HashMap<String,Json> ) -> Self {
+    fn new( specs: HashMap<String,Toml> ) -> Self {
         LibInfo {
             link_paths    : RefCell::default(),
             include_paths : RefCell::default(),
@@ -76,9 +74,9 @@ impl LibInfo {
         if let Some( spec ) = self.specs.get( pkg_name ) {
             let include_dir = self.get_includedir( &probed_ex )?;
 
-            if let Some( object ) = spec.as_object() {
+            if let Some( table ) = spec.as_table() {
                 if !scan_incdir {
-                    object
+                    table
                         .get( "headers" )
                         .and_then( |headers| headers.as_array() )
                         .and_then( |headers| headers
@@ -99,13 +97,13 @@ impl LibInfo {
                         ).context( UTF8_PATH )?;
 
                     if !probed_ex.pkgconf_ok() {
-                        if let Some( dependencies ) = object.get( "dependencies" ) {
+                        if let Some( dependencies ) = table.get( "dependencies" ) {
                             match dependencies {
-                                Json::Array( dependencies ) => for pkg_name in dependencies {
+                                Toml::Array( dependencies ) => for pkg_name in dependencies {
                                     self.probe( pkg_name.as_str().context( PKG_NAME_IS_STR )?, false )?;
                                 },
-                                Json::Object( dependencies ) => for (pkg_name, dep) in dependencies {
-                                    let dep = dep.as_object().context("named dependency should be object.")?;
+                                Toml::Table( dependencies ) => for (pkg_name, dep) in dependencies {
+                                    let dep = dep.as_table().context("named dependency should be table.")?;
                                     if check_os( dep )? {
                                         self.probe( pkg_name, false )?;
                                     }
@@ -116,13 +114,13 @@ impl LibInfo {
                     }
                 }
 
-                if let Some( dependencies ) = object.get( "header-dependencies" ) {
+                if let Some( dependencies ) = table.get( "header-dependencies" ) {
                     match dependencies {
-                        Json::Array( dependencies ) => for pkg_name in dependencies {
+                        Toml::Array( dependencies ) => for pkg_name in dependencies {
                             self.probe( pkg_name.as_str().context( PKG_NAME_IS_STR )?, true )?;
                         },
-                        Json::Object( dependencies ) => for (pkg_name, dep) in dependencies {
-                            let dep = dep.as_object().context("named dependency should be object.")?;
+                        Toml::Table( dependencies ) => for (pkg_name, dep) in dependencies {
+                            let dep = dep.as_table().context("named dependency should be table.")?;
                             if check_os( dep )? {
                                 self.probe( pkg_name, true )?;
                             }
@@ -142,8 +140,8 @@ impl LibInfo {
         let mut pc_file_names = vec![ pkg_name ];
 
         if let Some( spec ) = self.specs.get( pkg_name ) {
-            let object = spec.as_object().expect("clib specs should be a json map.");
-            if let Some( pc_alias ) = object.get("pc-alias") {
+            let table = spec.as_table().expect("clib specs should be a table.");
+            if let Some( pc_alias ) = table.get("pc-alias") {
                 pc_alias
                     .as_array()
                     .expect("pc-alias should be array.")
@@ -181,12 +179,12 @@ impl LibInfo {
     }
 
     fn probe_via_search( &self, pkg_name: &str, scan_incdir: bool ) -> ProbedEx {
-        if let Some( object ) = self.specs
+        if let Some( table ) = self.specs
             .get( pkg_name )
             .unwrap()
-            .as_object()
+            .as_table()
         {
-            object
+            table
                 .get( "exe" )
                 .and_then( |exe| exe.as_array() )
                 .map( |executable_names| -> ProbedEx {
@@ -211,7 +209,7 @@ impl LibInfo {
                                     .expect("bin should not be found in root directory.");
                                 let include_base = prefix.join("include");
 
-                                let guess_include = object
+                                let guess_include = table
                                     .get("includedir")
                                     .and_then( |includedirs| includedirs.as_array() )
                                     .and_then( |dirs| Some( dirs.iter().map( |dir| dir.as_str().expect( "include dir should be str." ))))
@@ -229,8 +227,8 @@ impl LibInfo {
                                 if !scan_incdir {
                                     self.link_paths.borrow_mut().push( prefix.join("lib").to_str().expect( UTF8_PATH ).to_owned() );
                                     println!( "cargo:rustc-link-search=native={}/lib", prefix.to_str().expect( UTF8_PATH ));
-                                    emit_cargo_meta_for_libs( &prefix, object.get( "libs" ).expect( "metadata should contain libs" ));
-                                    object.get( "libs-private" ).map( |libs| emit_cargo_meta_for_libs( &prefix, libs ));
+                                    emit_cargo_meta_for_libs( &prefix, table.get( "libs" ).expect( "metadata should contain libs" ));
+                                    table.get( "libs-private" ).map( |libs| emit_cargo_meta_for_libs( &prefix, libs ));
                                 }
 
                                 return ProbedEx::IncDir( guess_include );
@@ -267,12 +265,12 @@ impl LibInfo {
     }
 }
 
-fn emit_cargo_meta_for_libs( prefix: &Path, value: &Json ) {
+fn emit_cargo_meta_for_libs( prefix: &Path, value: &Toml ) {
     let lib_path = prefix.join("lib");
 
-    if let Some( object ) = value.as_object() {
+    if let Some( table ) = value.as_table() {
         'values:
-        for value in object.values() {
+        for value in table.values() {
             let lib_names = value.as_array().expect("names of libs should be an array.");
             for lib_name in lib_names {
                 let lib_name = lib_name.as_str().expect( "lib name should be str." );
@@ -323,18 +321,20 @@ fn generate_nothing() {
 }
 
 fn main() {
-    let (specs, builds) = inwelling( Opts::default() )
-        .sections
+    let (specs, builds) = inwelling::collect_downstream( inwelling::Opts::default() )
+        .packages
         .into_iter()
-        .fold(( HashMap::<String,Json>::new(), HashSet::<String>::new() ), |(mut specs, mut builds), section| {
-            section.metadata
-                .as_object()
-                .map( |obj| {
-                    obj .get( "spec" )
-                        .and_then( |spec| spec.as_object() )
+        .fold(( HashMap::<String,Toml>::new(), HashSet::<String>::new() ), |(mut specs, mut builds), package| {
+            package.metadata
+                .as_table()
+                .map( |table| {
+                    table
+                        .get( "spec" )
+                        .and_then( |spec| spec.as_table() )
                         .map( |spec| spec.iter()
                             .for_each( |(key,value)| { specs.insert( key.clone(), value.clone() ); }));
-                    obj .get( "build" )
+                    table
+                        .get( "build" )
                         .and_then( |build| build.as_array() )
                         .map( |build_list| build_list.iter()
                             .for_each( |pkg| { pkg.as_str().map( |pkg| { builds.insert( pkg.to_owned() ); }); }));
