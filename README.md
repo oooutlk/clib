@@ -119,7 +119,7 @@ This value tells crate clib to add include paths of x11 and its
 ```toml
 [package.metadata.inwelling.clib.spec.tk86.libs]
 tk = ["libtk86.so", "libtk8.6.so", "libtk.so", "libtk86.a", "libtk.a", "libtk86.dll.a", "libtk.dll.a", "tk86t.dll", "tk86t.lib"]
-tkstub = ["libtkstub86.a", "libtkstub.a", "tkstub86.lib"]
+tkstub = ["libtkstub86.a", "libtkstub8.6.a", "libtkstub.a", "tkstub86.lib"]
 ```
 
 The value `tk = [..]` enumerates possible library file names that need link
@@ -129,21 +129,6 @@ Once file of some name has been found under link path, the crate clib will stop
 searching and emit "cargo:rustc-link-lib={the-stripped-name}" to cargo. For
 example, if "libtk86.so" has been found, the prefix "lib" and suffix ".so" will
 be stripped and "cargo:rustc-link-lib=tk86" will be emitted.
-
-## Optional metadata
-
-```toml
-[features]
-libtk = []
-
-[package.metadata.inwelling-clib]
-feature = "libtk"
-```
-
-Cargo features can control whether to send metadata or not. in section
-`[package.metadata.inwelling-clib]`, a value of `feature = "libtk"`
-means that the metadata will be collected by inwelling if and only if feature
-"libtk" is enabled.
 
 # Global namespace
 
