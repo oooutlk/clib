@@ -10,11 +10,11 @@ publish = false
 clib = { path = "../.." }
 tcl = { path = "../tcl" }
 
+[build-dependencies]
+inwelling = "0.5"
+
 [features]
 libtk = []
-
-[package.metadata.inwelling-clib]
-feature = "libtk"
 
 [package.metadata.inwelling.clib]
 build = ["tk86"]
@@ -29,4 +29,4 @@ includedir = ["tk8.6", "tk"]
 
 [package.metadata.inwelling.clib.spec.tk86.libs]
 tk = ["libtk86.so", "libtk8.6.so", "libtk.so", "libtk86.a", "libtk.a", "libtk86.dll.a", "libtk.dll.a", "tk86t.dll", "tk86t.lib"]
-tkstub = ["libtkstub86.a", "libtkstub.a", "tkstub86.lib"]
+tkstub = ["libtkstub86.a", "libtkstub8.6.a", "libtkstub.a", "tkstub86.lib"]

@@ -12,6 +12,9 @@ should have generated bindings separately for one single C library.
 2. C libraries provides pkg-config file, or its installation is consistent with
 the assumption of this crate.
 
+3. The downstream crates of this library should invoke `inwelling::to( "clib" )`
+in their `build.rs`, and `cargo add --build inwelling` is required.
+
 # Usage demonstration: step-by-step explanation of tk library metadata
 
 Sample Cargo.toml files of tcl and tk libraries are in `examples/` folder. Let's

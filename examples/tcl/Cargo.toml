@@ -8,6 +8,9 @@ publish = false
 [dependencies]
 clib = { path = "../../../clib" }
 
+[build-dependencies]
+inwelling = "0.5"
+
 [package.metadata.inwelling.clib]
 build = ["tcl86"]
 
@@ -19,4 +22,4 @@ includedir = ["tcl8.6", "tcl"]
 
 [package.metadata.inwelling.clib.spec.tcl86.libs]
 tcl = ["libtcl86.so", "libtcl8.6.so", "libtcl.so", "libtcl86.a", "libtcl.a", "libtcl86.dll.a", "libtcl.dll.a", "tcl86t.dll", "tcl86t.lib"]
-tclstub = ["libtclstub86.a", "libtclstub.a", "tclstub86.lib"]
+tclstub = ["libtclstub86.a", "libtclstub8.6.a", "libtclstub.a", "tclstub86.lib"]
